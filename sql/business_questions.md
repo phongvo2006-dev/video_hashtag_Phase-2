@@ -261,29 +261,3 @@ two distinct warning signals while avoiding the assumption that low
 confidence alone necessarily means poor topic coverage, or vice versa.
 
 ---
-
-## Re-running and validating the results
-
-The SQL views contain the analytical logic; the figures shown in a report
-or dashboard should be generated from the current database, not manually
-copied from an older draft.
-
-After running `03_views.sql`, inspect each view with:
-
-```sql
-SELECT * FROM vw_video_topic_tags LIMIT 10;
-SELECT * FROM vw_category_overview ORDER BY video_count DESC;
-SELECT * FROM vw_high_tag_density_categories;
-SELECT * FROM vw_confidence_by_category
-ORDER BY pct_low_confidence_predictions DESC NULLS LAST;
-SELECT * FROM vw_category_review_priority ORDER BY review_rank;
-```
-
-For a reproducible GitHub snapshot, export the query results from PostgreSQL
-after validation. Refresh any numeric examples in the README and this
-document from those current outputs.
-
-**Scope note:** These views describe gold-label volume, prediction
-confidence, and exact topic-tag coverage. They do not measure engagement,
-reach, click-through rate, or recommendation impact because those outcome
-data are not part of the tables used here.
