@@ -1,0 +1,21 @@
+review_rank,category_name,avg_confidence,coverage_recall,review_priority
+1,education,0.7095,0.1227,High Priority Review
+2,scitech,0.7118,0.1339,High Priority Review
+3,ads,0.7387,0.1327,High Priority Review
+4,news,0.7391,0.0925,High Priority Review
+5,tvshow,0.7433,0.1121,High Priority Review
+6,travel,0.7441,0.1452,High Priority Review
+7,cooking,0.7069,0.2264,Normal
+8,food,0.7169,0.1823,Normal
+9,documentary,0.7305,0.1619,Normal
+10,movies,0.7659,0.1137,Normal
+11,people,0.7674,0.1991,Normal
+12,family,0.7740,0.1885,Normal
+13,howto,0.7809,0.1807,Normal
+14,beauty,0.7814,0.1599,Normal
+15,animation,0.7941,0.1788,Normal
+16,music,0.7962,0.1772,Normal
+17,animals,0.7964,0.1432,Normal
+18,sports,0.8116,0.2005,Normal
+19,gaming,0.8271,0.1698,Normal
+20,autos,0.8455,0.1864,Normal
