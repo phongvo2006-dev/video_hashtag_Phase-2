@@ -1,6 +1,6 @@
 # Video Hashtag LLM — Phase 2: Data Warehouse & Business Intelligence
 
-**A personal data engineering and business intelligence project** that transforms video-caption and hashtag-prediction outputs from Phase 1 into an analytical data warehouse and Power BI-ready datasets.
+A personal data engineering and business intelligence project that transforms video-caption and hashtag-prediction outputs from Phase 1 into an analytical data warehouse and Power BI-ready datasets.
 
 Phase 2 focuses on the operational questions that arise after a hashtag prediction model is deployed: what does the content catalogue look like, which hashtags and categories are related, and where should automated predictions be reviewed by a human?
 
@@ -269,16 +269,6 @@ The report has two pages, switched with the left-hand navigation. Both pages sha
 - **Priority Ranking** (table): the pre-ranked `review_rank` list with confidence, coverage recall, and a colour-coded `Review Priority` flag — the "where to look first" list.
 - **Low-Confidence Decomposition Tree:** starts from the low-confidence prediction count and splits by `rank_in_caption` → `category_name` → `hashtag_text`, so a reviewer can drill from "where in the ranking" down to individual hashtags.
 - **Confidence threshold** (what-if parameter): changes the cut-off that defines "low confidence" (default 0.50) and updates the KPI cards and decomposition tree.
-
-**Selected results**
-
-- Overall average prediction confidence: **0.7712**; predictions below 0.50 confidence: **13.8%** (1,903 of 13,790).
-- `education` has the highest share of low-confidence predictions (20.9%); `cooking` has the lowest average confidence (0.7069).
-- Combining confidence **and** topic-coverage recall (5 CTEs, `EXISTS`, and two window functions), **6 of 20 categories** — `education`, `scitech`, `ads`, `news`, `tvshow`, `travel` — are flagged `High Priority Review` and ranked by severity. This correctly **excludes** `cooking` despite its lowest raw confidence, because its coverage recall is above average.
-- Low confidence is concentrated deep in the ranking: predictions at `rank_in_caption` ≥ 4 are 34% of all predictions but **70%** of the low-confidence ones, so reviewing the lower-ranked hashtags first removes most of the risk.
-- Read the recall figures with care: the 0.49 on test+val is much higher than the 0.16 macro average because most tags only appear in train videos that have no predictions (5,152 of 30,561 tags are covered). Coverage recall is therefore used to *rank* categories against each other, not as an absolute quality score.
-
-**Data sources:** `vw_confidence_by_category`, `vw_category_review_priority`, plus the star-schema tables for the threshold-driven measures.
 
 ### Data model and DAX
 
