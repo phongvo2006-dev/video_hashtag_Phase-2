@@ -1,5 +1,11 @@
 -- Phase 2 — analytical views. SQL does every join/aggregation; Power BI only visualizes
 -- the already-computed rows below. Run with: psql -d video_hashtag_phase2 -f sql/03_views.sql
+--
+-- Metric definitions shared by the views (see sql/business_questions.md):
+--   * Views 2-3 count ALL gold labels per video (including the category-name label).
+--   * Views 1 and 5 use topic hashtags only (is_category_tag = FALSE).
+--   * Views 4-5 use predictions attached to evaluation captions (is_eval_caption = TRUE).
+--   * A prediction is low-confidence when confidence < 0.50.
 
 DROP VIEW IF EXISTS vw_category_review_priority;
 DROP VIEW IF EXISTS vw_confidence_by_category;
@@ -18,11 +24,9 @@ DROP VIEW IF EXISTS vw_topic_coverage_gap;
 -- own name tag) were assigned to it by the gold labels?
 --
 -- BUSINESS PURPOSE:
--- The simplest possible video-level lookup: lets a content reviewer or
--- creator-support agent pull up one video's substantive tags without
--- wading through the category-name tag that every video in a category
--- shares trivially. Foundation for every "which topics" question that
--- follows. 
+-- A video-level lookup that lets a content reviewer or creator-support agent
+-- see one video's substantive tags without the category-name tag that every
+-- video in a category shares trivially.
 CREATE OR REPLACE VIEW vw_video_topic_tags AS
 SELECT v.video_id, c.category_name, h.hashtag_text
 FROM fact_gold_label g
@@ -37,25 +41,25 @@ WHERE h.is_category_tag = FALSE;
 
 -- BUSINESS QUESTION:
 -- How many videos and distinct hashtags does each content category have,
--- how many tags per video on average, and how does that compare to the
--- dataset-wide average in the same row?
+-- how many gold labels per video on average, and how does that compare to
+-- the dataset-wide average in the same row?
 --
 -- BUSINESS PURPOSE:
--- Help the Content Operations team size review/QA effort per category,
--- with the dataset-wide benchmark attached to every row so a viewer never
--- has to cross-reference a second number to tell "high" from "low".
-
+-- Help the Content Operations team size review/QA effort per category, with
+-- the dataset-wide benchmark attached to every row.
+-- LEFT JOINs keep categories and videos that have no gold-label rows.
 CREATE OR REPLACE VIEW vw_category_overview AS
 SELECT
     c.category_name,
     COUNT(DISTINCT v.video_id)                                              AS video_count,
     COUNT(DISTINCT g.hashtag_id)                                            AS distinct_hashtag_count,
-    ROUND(COUNT(g.hashtag_id)::NUMERIC / COUNT(DISTINCT v.video_id), 2)     AS avg_tags_per_video,
-    (SELECT ROUND(COUNT(*)::NUMERIC / COUNT(DISTINCT video_id), 2)
-     FROM fact_gold_label)                                                 AS dataset_avg_tags_per_video
-FROM dim_video v
-INNER JOIN dim_category c ON v.category_id = c.category_id
-INNER JOIN fact_gold_label g ON v.video_id = g.video_id
+    ROUND(COUNT(g.hashtag_id)::NUMERIC / NULLIF(COUNT(DISTINCT v.video_id), 0), 2)
+                                                                            AS avg_tags_per_video,
+    (SELECT ROUND((SELECT COUNT(*) FROM fact_gold_label)::NUMERIC
+                  / NULLIF((SELECT COUNT(*) FROM dim_video), 0), 2))        AS dataset_avg_tags_per_video
+FROM dim_category c
+LEFT JOIN dim_video v ON v.category_id = c.category_id
+LEFT JOIN fact_gold_label g ON g.video_id = v.video_id
 GROUP BY c.category_id, c.category_name;
 
 -- ============================================================
@@ -63,74 +67,76 @@ GROUP BY c.category_id, c.category_name;
 -- ============================================================
 
 -- BUSINESS QUESTION:
--- Which categories have an average tags-per-video ABOVE the dataset-wide
--- average, i.e. are meaningfully more hashtag-dense than a typical video?
+-- Which categories have an average gold-label count per video ABOVE the
+-- dataset-wide average?
 --
 -- BUSINESS PURPOSE:
--- Give Content Operations a short, SQL-filtered outlier list (not the full
--- 20-row table) of categories where tagging effort per video already runs
--- high, to prioritise lightweight sampling review instead of full review.
-
+-- A short, SQL-filtered outlier list for lightweight sampling review. Same
+-- population and tag-count definition as view 2; the comparison uses the
+-- unrounded averages.
 CREATE OR REPLACE VIEW vw_high_tag_density_categories AS
 SELECT c.category_name,
-       COUNT(DISTINCT v.video_id)                                          AS video_count,
-       ROUND(COUNT(g.hashtag_id)::numeric / COUNT(DISTINCT v.video_id), 2) AS avg_tags_per_video
-FROM dim_video v
-JOIN dim_category c ON c.category_id = v.category_id
-JOIN fact_gold_label g ON g.video_id = v.video_id
-GROUP BY c.category_name
-HAVING COUNT(g.hashtag_id)::numeric / COUNT(DISTINCT v.video_id) >
-       (SELECT COUNT(*)::numeric / COUNT(DISTINCT video_id) FROM fact_gold_label)
+       COUNT(DISTINCT v.video_id)                                                  AS video_count,
+       ROUND(COUNT(g.hashtag_id)::NUMERIC / NULLIF(COUNT(DISTINCT v.video_id), 0), 2) AS avg_tags_per_video
+FROM dim_category c
+LEFT JOIN dim_video v ON v.category_id = c.category_id
+LEFT JOIN fact_gold_label g ON g.video_id = v.video_id
+GROUP BY c.category_id, c.category_name
+HAVING COUNT(g.hashtag_id)::NUMERIC / NULLIF(COUNT(DISTINCT v.video_id), 0) >
+       (SELECT (SELECT COUNT(*) FROM fact_gold_label)::NUMERIC
+               / NULLIF((SELECT COUNT(*) FROM dim_video), 0))
 ORDER BY avg_tags_per_video DESC;
 
 -- ============================================================
--- 4. GROUP BY, ranked via ORDER BY / LIMIT
+-- 4. GROUP BY + conditional aggregation
 -- ============================================================
 
 -- BUSINESS QUESTION:
--- In which categories does the deployed model (RoBERTa+RL) predict with
--- low confidence most often?
+-- In which categories are predictions below the 0.50 confidence threshold
+-- most frequent?
 --
 -- BUSINESS PURPOSE:
--- Help the Operations/content-moderation team decide which categories'
--- auto-generated hashtags need human review before publishing. The view
--- itself is a plain GROUP BY; ranking it ("top 5 worst") is left to an
--- ORDER BY ... LIMIT query on top, run on demand rather than baked into
--- the view. See sql/business_questions.md, question 4.
+-- Help the Operations team decide which categories' auto-generated hashtags
+-- need closer inspection. pct_low_confidence_predictions is on a 0-100 scale
+-- (20.90 = 20.90%). NULL metrics mean no evaluation predictions exist for the
+-- category, not zero confidence. Rank on demand with ORDER BY ... LIMIT.
 CREATE OR REPLACE VIEW vw_confidence_by_category AS
 SELECT c.category_name,
-       ROUND(AVG(fp.confidence)::numeric, 4)                     AS avg_confidence,
-       ROUND(AVG((fp.confidence < 0.5)::int)::numeric, 4)        AS pct_low_confidence_predictions
-FROM fact_prediction fp
-JOIN dim_caption cap ON cap.caption_id = fp.caption_id AND cap.is_eval_caption
-JOIN dim_video v ON v.video_id = cap.video_id
-JOIN dim_category c ON c.category_id = v.category_id
+       COUNT(fp.prediction_id)                                                     AS prediction_count,
+       ROUND(AVG(fp.confidence)::NUMERIC, 4)                                       AS avg_confidence,
+       ROUND(100.0 * COUNT(fp.prediction_id) FILTER (WHERE fp.confidence < 0.5)
+             / NULLIF(COUNT(fp.prediction_id), 0), 2)                              AS pct_low_confidence_predictions
+FROM dim_category c
+LEFT JOIN dim_video v ON v.category_id = c.category_id
+LEFT JOIN dim_caption cap ON cap.video_id = v.video_id AND cap.is_eval_caption
+LEFT JOIN fact_prediction fp ON fp.caption_id = cap.caption_id
 GROUP BY c.category_name;
 
 -- ============================================================
--- 5. CTEs + window functions (AVG() OVER(), RANK() OVER())
+-- 5. CTEs + window functions (AVG() OVER (), RANK() OVER ())
 -- ============================================================
 
 -- BUSINESS QUESTION:
--- Combining both trust signals, which categories should be flagged for
--- PRIORITY human review — i.e. both below-average prediction confidence
--- AND below-average topic-coverage recall at the same time — and in what
--- order should a reviewer work through them?
+-- Which categories are below the dataset-wide benchmark on BOTH average
+-- prediction confidence and topic-coverage recall, and in what order should
+-- a reviewer inspect them?
 --
 -- BUSINESS PURPOSE:
--- Turn two separate diagnostic signals into one decision-ready, pre-ranked
--- list instead of two charts a reviewer has to cross-reference manually.
--- Technique: 5 CTEs build up the two signals from base tables (topic_gold
--- restricts gold labels to non-category-name hashtags; topic_coverage
--- computes, per category, how many of those gold (video, hashtag) pairs
--- the model actually predicted, via an EXISTS subquery; coverage turns that
--- into a recall ratio; confidence aggregates prediction confidence per
--- category; combined attaches the dataset-wide average of EACH signal to
--- every row using AVG(...) OVER (), so no separate scalar-subquery pass is
--- needed). A final RANK() OVER (...) orders every category by priority
--- tier first, then by how weak its signals are, so the output is ready to
--- read top-to-bottom without any further sorting in Power BI.
--- See sql/business_questions.md, question 5.
+-- Turn two diagnostic signals into one decision-ready, pre-ranked list.
+--   topic_gold      non-category gold (video, hashtag) pairs
+--   topic_coverage  per category, how many of those pairs were predicted for
+--                   the same video (correlated EXISTS on the exact pair)
+--   confidence      per category, total and count of evaluation-caption
+--                   prediction confidences
+--   combined        attaches the dataset-wide benchmarks, each the average of
+--                   the category-level values (macro average, the same
+--                   benchmark the Power BI scatter uses), via AVG() OVER ()
+--   classified      assigns review_priority
+-- Priority: 'High Priority Review' = both metrics below benchmark; 'Normal' =
+-- both available but not both below; 'Insufficient Data' = either metric is
+-- unavailable. RANK() puts High Priority first, then lower confidence, then
+-- lower coverage, with Insufficient Data last and category_name as the final
+-- tie-breaker.
 CREATE OR REPLACE VIEW vw_category_review_priority AS
 WITH topic_gold AS (
     SELECT v.category_id, g.video_id, g.hashtag_id
@@ -144,50 +150,65 @@ topic_coverage AS (
            COUNT(*) AS gold_topic_assignments,
            COUNT(*) FILTER (
                WHERE EXISTS (
-                   SELECT 1 FROM fact_prediction p
+                   SELECT 1
+                   FROM fact_prediction p
                    INNER JOIN dim_caption cap ON p.caption_id = cap.caption_id
-                   WHERE cap.video_id = tg.video_id AND p.hashtag_id = tg.hashtag_id
+                   WHERE cap.is_eval_caption
+                     AND cap.video_id = tg.video_id
+                     AND p.hashtag_id = tg.hashtag_id
                )
            ) AS predicted_hit_count
     FROM topic_gold tg
     GROUP BY tg.category_id
 ),
-coverage AS (
-    SELECT category_id,
-           predicted_hit_count::NUMERIC / NULLIF(gold_topic_assignments, 0) AS coverage_recall
-    FROM topic_coverage
-),
 confidence AS (
-    SELECT v.category_id, AVG(p.confidence)::NUMERIC AS avg_confidence
+    SELECT v.category_id,
+           SUM(p.confidence)::NUMERIC AS confidence_sum,
+           COUNT(*)                   AS prediction_count
     FROM fact_prediction p
-    INNER JOIN dim_caption cap ON p.caption_id = cap.caption_id
+    INNER JOIN dim_caption cap ON p.caption_id = cap.caption_id AND cap.is_eval_caption
     INNER JOIN dim_video v ON cap.video_id = v.video_id
     GROUP BY v.category_id
 ),
 combined AS (
-    SELECT c.category_id, c.category_name,
-           conf.avg_confidence, cov.coverage_recall,
-           AVG(conf.avg_confidence) OVER () AS avg_category_confidence,
-           AVG(cov.coverage_recall) OVER ()  AS avg_category_coverage
+    SELECT c.category_id,
+           c.category_name,
+           conf.confidence_sum / NULLIF(conf.prediction_count, 0)             AS avg_confidence,
+           cov.predicted_hit_count::NUMERIC / NULLIF(cov.gold_topic_assignments, 0)
+                                                                              AS coverage_recall,
+           AVG(conf.confidence_sum / NULLIF(conf.prediction_count, 0)) OVER ()  AS dataset_avg_confidence,
+           AVG(cov.predicted_hit_count::NUMERIC
+               / NULLIF(cov.gold_topic_assignments, 0)) OVER ()                 AS dataset_avg_coverage_recall
     FROM dim_category c
-    INNER JOIN confidence conf ON c.category_id = conf.category_id
-    INNER JOIN coverage cov ON c.category_id = cov.category_id
+    LEFT JOIN confidence conf ON conf.category_id = c.category_id
+    LEFT JOIN topic_coverage cov ON cov.category_id = c.category_id
 ),
 classified AS (
     SELECT *,
-           CASE WHEN avg_confidence < avg_category_confidence
-                 AND coverage_recall < avg_category_coverage
-                THEN 'High Priority Review' ELSE 'Normal' END AS review_priority
+           CASE
+               WHEN avg_confidence IS NULL OR coverage_recall IS NULL THEN 'Insufficient Data'
+               WHEN avg_confidence < dataset_avg_confidence
+                AND coverage_recall < dataset_avg_coverage_recall THEN 'High Priority Review'
+               ELSE 'Normal'
+           END AS review_priority
     FROM combined
 )
 SELECT
     RANK() OVER (
-        ORDER BY CASE WHEN review_priority = 'High Priority Review' THEN 0 ELSE 1 END,
-                 avg_confidence ASC, coverage_recall ASC
+        ORDER BY CASE review_priority
+                     WHEN 'High Priority Review' THEN 0
+                     WHEN 'Normal' THEN 1
+                     ELSE 2
+                 END,
+                 avg_confidence ASC NULLS LAST,
+                 coverage_recall ASC NULLS LAST,
+                 category_name
     ) AS review_rank,
     category_name,
-    ROUND(avg_confidence, 4)  AS avg_confidence,
-    ROUND(coverage_recall, 4) AS coverage_recall,
+    ROUND(avg_confidence, 4)             AS avg_confidence,
+    ROUND(coverage_recall, 4)            AS coverage_recall,
+    ROUND(dataset_avg_confidence, 4)     AS dataset_avg_confidence,
+    ROUND(dataset_avg_coverage_recall, 4) AS dataset_avg_coverage_recall,
     review_priority
 FROM classified
 ORDER BY review_rank;

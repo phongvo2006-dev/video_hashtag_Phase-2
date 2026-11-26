@@ -204,7 +204,7 @@ Five SQL views turn the warehouse into reusable analytical datasets, ordered as 
 - **Evaluation predictions (view 4):** use only predictions attached to captions where `is_eval_caption = TRUE`.
 - **Low-confidence threshold:** a prediction is low-confidence when `confidence < 0.50`. This is an operational threshold, not a calibrated probability and not proof that a prediction is wrong.
 - **Topic coverage (view 5):** a gold `(video, hashtag)` pair counts as covered only if that same hashtag was predicted for that same video; predicting it for a different video in the category does not count.
-- **Priority rule (view 5):** a category is `High Priority Review` only when its average confidence **and** its coverage recall are both below the dataset-wide benchmark. Those categories are ranked first, then ordered by lower confidence and lower coverage.
+- **Priority rule (view 5):** a category is `High Priority Review` only when its average confidence **and** its coverage recall are both below the dataset-wide benchmark (the average of the category-level values, the same macro average the Power BI scatter uses). Those categories are ranked first, then ordered by lower confidence and lower coverage.
 
 ### Business Analysis
 
@@ -216,7 +216,7 @@ Each of the five views is documented in **[Business Questions & SQL Analysis](sq
 - How to interpret the result, including the metric definitions and their limitations
 - Business use
 
-> **Validation note:** the SQL definitions were revised for consistent populations and metric definitions, so the write-up does not quote result tables. Re-run the queries against the current `video_hashtag_phase2` database and refresh any reported numbers before publishing them.
+> **Validation note:** the views, the write-up and the Power BI dashboard use the same definitions, and the CSV exports in `sql/results/` and `powerbi/data/` are generated from the current SQL. The write-up does not quote result tables; if the data or the SQL changes, re-run the queries and refresh any reported numbers.
 
 ---
 
@@ -254,7 +254,7 @@ The report has two pages, switched with the left-hand navigation. Both pages sha
 - `food` has the highest average number of tags per video (5.15); `news` has the lowest (2.98).
 - Only **7 of 20 categories** (`food`, `sports`, `animation`, `music`, `family`, `autos`, `cooking`) are above the 4.06 average — a SQL-computed (`GROUP BY ... HAVING` against a subquery) outlier list, not an eyeballed one.
 
-**Data sources:** `vw_category_overview`, `vw_video_topic_tags`, `vw_high_tag_density_categories`, plus the star-schema tables for the slicer-driven measures.
+**Data:** star-schema tables with DAX measures. **SQL cross-check:** `vw_category_overview`, `vw_video_topic_tags` and `vw_high_tag_density_categories` return the same category figures as the page (e.g. the 7 above-average categories).
 
 ### Dashboard 2 — Prediction Trust (confidence and topic coverage)
 
@@ -274,17 +274,19 @@ The report has two pages, switched with the left-hand navigation. Both pages sha
   | High Priority Categories | 6 / 20 | Predictions: High Priority 2,102 · Normal 11,688 |
   | Macro Avg Recall | 0.16 | Test+Val recall 0.49 · Covered tags 5,152 / 30,561 |
 
-- **Prediction by Category** (scatter): one point per category — average confidence (x) against coverage recall (y), with dashed average lines and a shaded *High Priority* zone where both signals are below average.
+- **Prediction by Category** (scatter): one point per category — average confidence (x) against coverage recall (y), with dashed average lines (the macro average across categories, the same benchmark as `vw_category_review_priority`) and a shaded *High Priority* zone where both signals are below average.
 - **Priority Ranking** (table): the pre-ranked `review_rank` list with confidence, coverage recall, and a colour-coded `Review Priority` flag — the "where to look first" list.
 - **Low-Confidence Decomposition Tree:** starts from the low-confidence prediction count and splits by `rank_in_caption` → `category_name` → `hashtag_text`, so a reviewer can drill from "where in the ranking" down to individual hashtags.
 - **Confidence threshold** (what-if parameter): changes the cut-off that defines "low confidence" (default 0.50) and updates the KPI cards and decomposition tree.
 
 ### Data model and DAX
 
-The report is built on two layers of CSV in [`powerbi/data/`](powerbi/data/), both imported with **Get Data → Text/CSV**:
+The report's model is built from CSV files in [`powerbi/data/`](powerbi/data/), imported with **Get Data → Text/CSV**:
 
-1. **5 pre-computed SQL views** (`powerbi/data/*.csv`) — the output of every view in [`sql/03_views.sql`](sql/03_views.sql), already joined, aggregated and ranked by SQL.
-2. **7 star-schema tables** (`powerbi/data/star_schema/*.csv`) — the 4 dimensions and 3 facts underneath those views, related in Power BI's Model view and used by the DAX measures and slicers.
+1. **7 star-schema tables** (`powerbi/data/star_schema/*.csv`) — the 4 dimensions and 3 facts, related in Power BI's Model view. Every visual, slicer and DAX measure in the report runs on these tables.
+2. **5 pre-computed SQL views** (`powerbi/data/*.csv`) — the output of every view in [`sql/03_views.sql`](sql/03_views.sql). They are not used by the visuals; they are the SQL-side version of the same analysis and let you cross-check the dashboard.
+
+**SQL ↔ dashboard cross-check.** The two sides use the same definitions and give the same figures: 0.7712 average confidence and 13.8% of predictions below 0.50 (from `vw_confidence_by_category`), and the same 6 `High Priority Review` categories in the same order (from `vw_category_review_priority`), with 2,102 predictions in those categories against 11,688 in the rest.
 
 Relationships (all single-direction, "one" side listed first):
 
@@ -344,8 +346,8 @@ No GPU is required. Phase 2 does not train or run a model.
 
 ```bash
 # 1. Clone this repository
-git clone https://github.com/phongvo2006-dev/video_hashtag_llm_Phase-2.git
-cd video_hashtag_llm_Phase-2
+git clone https://github.com/phongvo2006-dev/video_hashtag_Phase-2.git
+cd video_hashtag_Phase-2
 
 # 2. Generate relational CSV files from Phase 1 artifacts
 python data_engineering/load_phase2.py \
@@ -360,8 +362,9 @@ bash sql/load.sh
 # 5. Create the five analytical views
 psql -d video_hashtag_phase2 -f sql/03_views.sql
 
-# 6. Export the view results for Power BI
+# 6. Export the datasets for Power BI (5 views + 7 star-schema tables)
 bash sql/export_views.sh
+bash sql/export_star_schema.sh
 ```
 
 The workflow runs locally using flat-file processing, PostgreSQL, and `\copy`. Replace `/path/to/video_hashtag_llm_F` with the local path to your Phase 1 repository.
@@ -371,7 +374,7 @@ The workflow runs locally using flat-file processing, PostgreSQL, and `\copy`. R
 ## 8. Repository Structure
 
 ```text
-video_hashtag_llm_Phase-2/
+video_hashtag_Phase-2/
 ├── data_engineering/
 │   ├── load_phase2.py        # ETL: Phase 1 artifacts → relational CSV files
 │   └── exports/              # Generated CSV files for warehouse loading

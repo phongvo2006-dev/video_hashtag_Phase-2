@@ -4,11 +4,11 @@ This document explains the five analytical views defined in
 [`03_views.sql`](03_views.sql). Each section connects a business scenario
 to the question, SQL technique, and intended interpretation.
 
-> **Data validation note:** The SQL definitions have been revised for
-> consistent populations and metric definitions. The result tables and
-> category rankings from earlier drafts should not be reused as verified
-> outputs. Re-run the queries against the current `video_hashtag_phase2`
-> database and refresh any reported numbers before publishing them.
+> **Data validation note:** The SQL definitions in `03_views.sql` use the
+> consistent populations and metric definitions below, and the CSV exports in
+> `sql/results/` and `powerbi/data/` were regenerated from them. Result tables
+> from earlier drafts should not be reused; if the data or the SQL changes,
+> re-run the queries and refresh any reported numbers before publishing them.
 
 ## Shared metric definitions
 
@@ -22,10 +22,14 @@ to the question, SQL technique, and intended interpretation.
 - **Low-confidence threshold:** A prediction is low-confidence when
   `confidence < 0.50`.
 - **Percentage scale:** `pct_low_confidence_predictions` is returned on a
-  0–100 scale. For example, `20.90` means 20.90%.
-- **Dataset benchmarks in question 5:** Confidence and coverage benchmarks
-  are weighted across all prediction rows and all gold topic pairs,
-  respectively. They are not unweighted averages of category averages.
+  0–100 scale. For example, `20.91` means 20.91%.
+- **Dataset benchmarks in question 5:** The confidence and coverage
+  benchmarks are the unweighted (macro) averages of the category-level
+  values, so every category counts equally regardless of size. This is the
+  same benchmark the Power BI dashboard uses (Macro Avg Confidence and
+  Macro Avg Recall). Overall prediction-weighted figures, such as the
+  dashboard's Average Confidence KPI, are a different number and are not
+  used as the flagging benchmark.
 
 ---
 
@@ -200,7 +204,7 @@ window functions.
 | **Business Scenario** | Operations has separate confidence and topic-coverage diagnostics but needs one consolidated view to decide which categories to investigate first. |
 | **Business Objective** | Flag categories only when both prediction confidence and topic-coverage recall are below their respective dataset-wide benchmarks. |
 | **Business Question** | Which categories are below the dataset-wide benchmark on both average prediction confidence and topic-coverage recall, and in what order should reviewers inspect them? |
-| **SQL Technique** | Five CTEs (`topic_gold`, `topic_coverage`, `confidence`, `combined`, `classified`), a correlated `EXISTS` subquery, weighted window aggregates, and `RANK() OVER (...)`. |
+| **SQL Technique** | Five CTEs (`topic_gold`, `topic_coverage`, `confidence`, `combined`, `classified`), a correlated `EXISTS` subquery, window aggregates (`AVG() OVER ()`) for the benchmarks, and `RANK() OVER (...)`. |
 
 **Example query**
 
@@ -227,10 +231,10 @@ ORDER BY review_rank;
 - **Coverage recall:** `predicted_hit_count / gold_topic_assignments`.
 - **Average confidence:** Mean confidence across predictions attached to
   evaluation captions in the category.
-- **Dataset confidence benchmark:** Total confidence across all eligible
-  predictions divided by the total number of eligible predictions.
-- **Dataset coverage benchmark:** Total matched gold topic pairs divided
-  by the total gold topic assignments.
+- **Dataset confidence benchmark:** The average of the category-level
+  average confidences.
+- **Dataset coverage benchmark:** The average of the category-level
+  coverage recalls.
 
 The `EXISTS` condition checks the exact video–hashtag pair. It does not
 count a hashtag as covered merely because the model predicted it for a
@@ -239,7 +243,7 @@ different video in the same category.
 **Priority rules**
 
 1. `High Priority Review`: both category metrics are below their respective
-   weighted dataset-wide benchmarks.
+   dataset-wide benchmarks.
 2. `Normal`: both metrics are available, but the two-signal condition is
    not met.
 3. `Insufficient Data`: either confidence or topic coverage is unavailable
