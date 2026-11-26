@@ -1,9 +1,4 @@
 -- Phase 2 — PostgreSQL warehouse schema.
--- Star schema: dim_video / dim_category / dim_caption / dim_hashtag are dimensions;
--- fact_gold_label, fact_prediction, fact_caption_metadata are facts.
--- Only the deployed model (RoBERTa+RL) is modeled here — see data_engineering/load_phase2.py
--- for why the other four Phase-1 comparison models are intentionally not loaded.
-
 DROP TABLE IF EXISTS fact_prediction CASCADE;
 DROP TABLE IF EXISTS fact_caption_metadata CASCADE;
 DROP TABLE IF EXISTS fact_gold_label CASCADE;
@@ -51,7 +46,6 @@ CREATE TABLE fact_caption_metadata (
 );
 
 -- RoBERTa+RL predictions on each video's eval caption only, confidence >= 0.40
--- (the model's own best Set-F1 operating point — see data_engineering/load_phase2.py).
 CREATE TABLE fact_prediction (
     prediction_id   BIGSERIAL PRIMARY KEY,
     caption_id      BIGINT REFERENCES dim_caption(caption_id),
