@@ -31,7 +31,7 @@ to the question, SQL technique, and intended interpretation.
 
 ## 1. `vw_video_topic_tags` — Video-Level Topic Lookup
 
-**Complexity: Beginner** — plain joins, no aggregation.
+plain joins, no aggregation.
 
 | | |
 |---|---|
@@ -64,8 +64,7 @@ labels without repeating the category tag as if it were a specific topic.
 ---
 
 ## 2. `vw_category_overview` — Content Catalogue Sizing
-
-**Complexity: Beginner / Intermediate** — `GROUP BY` plus a scalar subquery.
+`GROUP BY` plus a scalar subquery.
 
 | | |
 |---|---|
@@ -111,8 +110,7 @@ as evidence of higher or lower model quality.
 ---
 
 ## 3. `vw_high_tag_density_categories` — Above-Average Tag Density
-
-**Complexity: Intermediate** — `GROUP BY ... HAVING` with a scalar subquery.
+`GROUP BY ... HAVING` with a scalar subquery.
 
 | | |
 |---|---|
@@ -148,8 +146,7 @@ more manual review or that its labels are less accurate.
 ---
 
 ## 4. `vw_confidence_by_category` — Prediction Confidence by Category
-
-**Complexity: Intermediate** — `GROUP BY` and conditional aggregation.
+`GROUP BY` and conditional aggregation.
 
 | | |
 |---|---|
@@ -195,8 +192,7 @@ that a prediction is incorrect.
 ---
 
 ## 5. `vw_category_review_priority` — Combined Review Priority
-
-**Complexity: Advanced** — five CTEs, a correlated `EXISTS` subquery, and
+five CTEs, a correlated `EXISTS` subquery, and
 window functions.
 
 | | |
