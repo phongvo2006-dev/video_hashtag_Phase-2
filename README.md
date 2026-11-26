@@ -22,14 +22,14 @@ Phase 2 takes the outputs already produced by Phase 1 and builds an analytics la
 - **Analytical SQL:** five simulated questions and circumstances designed to answer a specific business question.
 - **Business analysis:** a documented business scenario, SQL query, result, insight, and recommendation for every view.
 - **BI-ready datasets:** CSV exports that can be imported directly into Power BI.
-- **Dashboard design:** a KPI and chart specification for two dashboards covering content taxonomy/tagging density and prediction trust/review priority.
+- **Power BI dashboard:** a two-page report (`.pbix` plus PDF export) covering content taxonomy/tagging density and prediction trust/review priority.
 
 ### Phase 1 and Phase 2
 
 | Phase | Focus | Main output |
 |---|---|---|
 | **Phase 1** | Dataset preparation, weak-label construction, model training and evaluation | A deployed RoBERTa+RL hashtag prediction model |
-| **Phase 2** | Data engineering, dimensional modelling, analytical SQL, business analysis, and BI | PostgreSQL warehouse, five SQL views, documented business insights, and two Power BI dashboard datasets |
+| **Phase 2** | Data engineering, dimensional modelling, analytical SQL, business analysis, and BI | PostgreSQL warehouse, five SQL views, documented business insights, and a two-page Power BI dashboard |
 
 Phase 2 reads the following existing Phase 1 artifacts:
 
@@ -213,16 +213,81 @@ See **[Business Questions & SQL Analysis](sql/business_questions.md)** for the f
 
 ## 6. Power BI
 
-This repository contains the **Power BI input datasets**, rather than the `.pbix` dashboard files, under [`powerbi/data/`](powerbi/data/) in two layers:
+The final deliverable of Phase 2 is a two-page Power BI report, **Hashtag Prediction Analytics Dashboard**, built on the PostgreSQL star schema and a set of DAX measures. The report turns the warehouse into something a content or model owner can actually use: *what does the catalogue look like?* and *where can we trust the model's hashtags, and where should a human review them first?*
 
-1. **5 pre-computed SQL views** (`powerbi/data/*.csv`) — the output of every view in [`sql/03_views.sql`](sql/03_views.sql), already joined/aggregated/ranked by SQL. These are the primary source for the two dashboards below: Power BI just visualizes rows that are already business-question-ready.
-2. **7 raw star-schema tables** (`powerbi/data/star_schema/*.csv`) — the 4 dimensions and 3 facts underneath those views, exported as-is. These are for building an actual relationship model *inside* Power BI (Model view) and writing your own DAX measures on top, independent of the SQL layer — useful as a cross-check, or for any slicing the 5 fixed views don't already cover.
+| File | Description |
+|---|---|
+| [`Hashtag Prediction Analysis Dashboard_Võ Thành Phong.pbix`](powerbi/data/Hashtag%20Prediction%20Analysis%20Dashboard_V%C3%B5%20Th%C3%A0nh%20Phong.pbix) | The editable Power BI report (open with Power BI Desktop) |
+| [`Hashtag Prediction Analysis Dashboard _ Võ Thành Phong.pdf`](powerbi/data/Hashtag%20Prediction%20Analysis%20Dashboard%20_%20V%C3%B5%20Th%C3%A0nh%20Phong.pdf) | A 2-page PDF export, for readers without Power BI |
+| [`powerbi/images/`](powerbi/images/) | The page screenshots shown below |
 
-Both are imported the same way: **Get Data → Text/CSV**, one file per table/view.
+The report has two pages, switched with the left-hand navigation. Both pages share the same left panel: page navigation plus **Category** and **Split** (train / val / test) slicers.
 
-### Star schema relationships (layer 2)
+### Dashboard 1 — Overview (content taxonomy)
 
-If you load the 7 `star_schema/` tables, set up these relationships in Power BI's Model view (all single-direction, "one" side listed first):
+![Dashboard 1 — Overview](powerbi/images/dashboard1_overview.png)
+
+**Business question:** What does the content catalogue look like, which categories account for the largest share of it, and which ones already run denser tagging than typical?
+
+**What is on the page**
+
+- **5 KPI cards:** Total Videos (10,000), Categories (20), Distinct Hashtags (367), Avg Tags per Video (4.06), and Most Used Hashtag (`#game`, 1,182 videos).
+- **Videos by Category** (column chart): catalogue size per category, largest first.
+- **Avg Tags per Video by category** (bar chart): each category against the 4.06 dataset-wide average line, showing at a glance which ones are denser than typical.
+- **Category Summary** (table): videos, distinct hashtags, and average tags per video for each category.
+- **Video-Level Topic-Tag Detail** (table): tags per video and a sample of its top hashtags; filtered by the category slicer to drill into a single category.
+- **Hit Rate and Avg Confidence by `rank_in_caption`** (combo chart): how prediction quality and confidence change as the model moves down its ranked hashtag list.
+
+**Selected results**
+
+- 10,000 videos across 20 categories, 367 distinct hashtags, 4.06 average gold-label hashtags per video.
+- `sports` is the largest category (1,108 videos, 11.1% of the catalogue).
+- `food` has the highest average number of tags per video (5.15); `news` has the lowest (2.98).
+- Only **7 of 20 categories** (`food`, `sports`, `animation`, `music`, `family`, `autos`, `cooking`) are above the 4.06 average — a SQL-computed (`GROUP BY ... HAVING` against a subquery) outlier list, not an eyeballed one.
+
+**Data sources:** `vw_category_overview`, `vw_video_topic_tags`, `vw_high_tag_density_categories`, plus the star-schema tables for the slicer-driven measures.
+
+### Dashboard 2 — Prediction Trust (confidence and topic coverage)
+
+![Dashboard 2 — Prediction Trust](powerbi/images/dashboard2_prediction_trust.png)
+
+**Business question:** How reliable are the deployed model's predictions, and — combining confidence with topic-coverage recall — which categories need priority review, in what order?
+
+**What is on the page**
+
+- **5 KPI cards**, each with a sparkline and reference sub-metrics:
+
+  | KPI | Value | Reference labels |
+  |---|---|---|
+  | Average Confidence | 0.77 | Normal 0.78 · High Priority 0.73 |
+  | Low-Confidence Predictions | 0.14 (13.8%) | Test 0.14 · Val 0.13 |
+  | Hit Rate | 0.52 | High Conf 0.79 · Low Conf 0.24 |
+  | High Priority Categories | 6 / 20 | Predictions: High Priority 2,102 · Normal 11,688 |
+  | Macro Avg Recall | 0.16 | Test+Val recall 0.49 · Covered tags 5,152 / 30,561 |
+
+- **Prediction by Category** (scatter): one point per category — average confidence (x) against coverage recall (y), with dashed average lines and a shaded *High Priority* zone where both signals are below average.
+- **Priority Ranking** (table): the pre-ranked `review_rank` list with confidence, coverage recall, and a colour-coded `Review Priority` flag — the "where to look first" list.
+- **Low-Confidence Decomposition Tree:** starts from the low-confidence prediction count and splits by `rank_in_caption` → `category_name` → `hashtag_text`, so a reviewer can drill from "where in the ranking" down to individual hashtags.
+- **Confidence threshold** (what-if parameter): changes the cut-off that defines "low confidence" (default 0.50) and updates the KPI cards and decomposition tree.
+
+**Selected results**
+
+- Overall average prediction confidence: **0.7712**; predictions below 0.50 confidence: **13.8%** (1,903 of 13,790).
+- `education` has the highest share of low-confidence predictions (20.9%); `cooking` has the lowest average confidence (0.7069).
+- Combining confidence **and** topic-coverage recall (5 CTEs, `EXISTS`, and two window functions), **6 of 20 categories** — `education`, `scitech`, `ads`, `news`, `tvshow`, `travel` — are flagged `High Priority Review` and ranked by severity. This correctly **excludes** `cooking` despite its lowest raw confidence, because its coverage recall is above average.
+- Low confidence is concentrated deep in the ranking: predictions at `rank_in_caption` ≥ 4 are 34% of all predictions but **70%** of the low-confidence ones, so reviewing the lower-ranked hashtags first removes most of the risk.
+- Read the recall figures with care: the 0.49 on test+val is much higher than the 0.16 macro average because most tags only appear in train videos that have no predictions (5,152 of 30,561 tags are covered). Coverage recall is therefore used to *rank* categories against each other, not as an absolute quality score.
+
+**Data sources:** `vw_confidence_by_category`, `vw_category_review_priority`, plus the star-schema tables for the threshold-driven measures.
+
+### Data model and DAX
+
+The report is built on two layers of CSV in [`powerbi/data/`](powerbi/data/), both imported with **Get Data → Text/CSV**:
+
+1. **5 pre-computed SQL views** (`powerbi/data/*.csv`) — the output of every view in [`sql/03_views.sql`](sql/03_views.sql), already joined, aggregated and ranked by SQL.
+2. **7 star-schema tables** (`powerbi/data/star_schema/*.csv`) — the 4 dimensions and 3 facts underneath those views, related in Power BI's Model view and used by the DAX measures and slicers.
+
+Relationships (all single-direction, "one" side listed first):
 
 | From (1) | To (*) | Join column |
 |---|---|---|
@@ -234,69 +299,23 @@ If you load the 7 `star_schema/` tables, set up these relationships in Power BI'
 | `dim_hashtag` | `fact_gold_label` | `hashtag_id` |
 | `dim_hashtag` | `fact_prediction` | `hashtag_id` |
 
-`dim_caption.caption_text` is intentionally **not** included in `dim_caption.csv` — none of the planned visuals display individual caption text, and all 200,000 rows of it would roughly double the model's size for no analytical benefit. Every column needed for the relationships above is kept.
+`dim_caption.caption_text` is intentionally **not** included in `dim_caption.csv` — no visual displays individual caption text, and all 200,000 rows of it would roughly double the model's size for no analytical benefit.
 
-With that model in place, DAX measures such as these reproduce (and let you extend) the same numbers the SQL views already compute:
+Core measures (the report adds further ones for the reference labels, sparklines and review flag):
 
 ```dax
 Total Videos        = DISTINCTCOUNT(dim_video[video_id])
 Avg Tags per Video  = DIVIDE(COUNTROWS(fact_gold_label), [Total Videos])
 Avg Confidence      = AVERAGE(fact_prediction[confidence])
-Pct Low Confidence  = DIVIDE(
-                           CALCULATE(COUNTROWS(fact_prediction), fact_prediction[confidence] < 0.5),
-                           COUNTROWS(fact_prediction)
-                       )
+
+-- Threshold comes from the what-if parameter; the VAR avoids using a measure
+-- inside a CALCULATE filter predicate
+Low-Conf Count =
+VAR t = [Confidence Threshold Value]
+RETURN CALCULATE(COUNTROWS(fact_prediction), fact_prediction[confidence] < t)
+
+Low Conf % = DIVIDE([Low-Conf Count], COUNTROWS(fact_prediction))
 ```
-
-The dashboard design consists of two pages, built primarily from the five SQL views, with the star-schema model available alongside for any additional cross-filtering:
-
-1. **Content Taxonomy Overview** — catalogue size, category distribution, per-video topic-tag drill-in, and the above-average tag-density outlier list.
-2. **Prediction Trust & Topic Coverage** — model confidence and the combined, pre-ranked review-priority flag.
-
-The planned report uses shared `category_name` and `split` slicers across the pages.
-
-### Dashboard 1 — Content Taxonomy Overview
-
-**Business question:** What does the content catalogue look like, which categories account for the largest share of it, and which ones already run denser tagging than typical?
-
-**Data sources:** `vw_category_overview`, `vw_video_topic_tags`, `vw_high_tag_density_categories`
-
-Selected results from this dataset:
-
-- 10,000 videos across 20 categories
-- 367 distinct hashtags
-- 4.06 average gold-label hashtags per video
-- `sports` is the largest category, with 1,108 videos (11.1% of the catalogue)
-- `food` has the highest average number of tags per video (5.15), while `news` has the lowest (2.98)
-- Only **7 of 20 categories** (`food`, `sports`, `animation`, `music`, `family`, `autos`, `cooking`) are above the 4.06 dataset-wide average — a SQL-computed (`GROUP BY ... HAVING` against a subquery) outlier list, not an eyeballed one
-
-**Planned visuals**
-- KPI cards for total videos, categories, hashtags, and average tags per video
-- Category-level video-count and hashtag-count bar charts
-- Category summary matrix
-- Video-level topic-tag drill-through table (backed by `vw_video_topic_tags`), filtered to one video or category at a time
-- Highlighted callout list of the 7 above-average tag-density categories
-
-### Dashboard 2 — Prediction Trust & Topic Coverage
-
-**Business question:** How reliable are the deployed model's predictions, and — combining confidence with topic-coverage recall — which categories need priority review, in what order?
-
-**Data sources:** `vw_confidence_by_category`, `vw_category_review_priority`
-
-Selected results from this dataset:
-
-- Overall average prediction confidence: **0.7712**
-- Predictions below 0.50 confidence: **13.8%**
-- `education` has the highest share of low-confidence predictions (20.9%); `cooking` has the lowest average confidence (0.7069)
-- Combining confidence **and** topic-coverage recall (5 CTEs, `EXISTS`, and two window functions), **6 of 20 categories** — `education`, `scitech`, `ads`, `news`, `tvshow`, `travel` — are flagged `High Priority Review` and pre-ranked by severity (`review_rank`). Note this correctly **excludes** `cooking` despite its lowest raw confidence, because its coverage recall is actually above average
-
-The dashboard combines confidence and topic coverage to help identify categories that may need closer human review. Confidence and coverage are tracked as separate signals, and then combined into one pre-ranked flag — a stricter, more defensible list than either diagnostic alone.
-
-**Planned visuals**
-- Category ranking by percentage of low-confidence predictions
-- Confidence-versus-coverage scatter plot, one point per category, colored by the SQL-computed `review_priority` flag
-- A flat, pre-ranked review-priority table (`review_rank`, exportable "where to look first" list)
-- Confidence-threshold filter
 
 ### Regenerate Power BI datasets
 
@@ -306,6 +325,8 @@ After the SQL views have been created, run:
 bash sql/export_views.sh        # the 5 pre-computed views -> powerbi/data/ and sql/results/
 bash sql/export_star_schema.sh  # the 7 raw star-schema tables -> powerbi/data/star_schema/
 ```
+
+Then open the `.pbix` and use **Refresh**; if the CSV files have moved, update the source paths under **Transform data → Data source settings**.
 
 ---
 
@@ -365,9 +386,12 @@ video_hashtag_llm_Phase-2/
 │   ├── export_star_schema.sh # Export the 7 raw star-schema tables to CSV
 │   └── results/              # Executed SQL view results
 ├── powerbi/
-│   └── data/                 # CSV datasets for Power BI
-│       ├── *.csv             # The 5 pre-computed views (primary dashboard source)
-│       └── star_schema/      # The 4 dims + 3 facts, for relationships/DAX in Power BI
+│   ├── data/                 # Power BI report and its CSV datasets
+│   │   ├── *.pbix            # The Power BI report (2 pages)
+│   │   ├── *.pdf             # PDF export of the report
+│   │   ├── *.csv             # The 5 pre-computed views
+│   │   └── star_schema/      # The 4 dims + 3 facts, for relationships/DAX in Power BI
+│   └── images/               # Dashboard screenshots used in this README
 └── README.md
 ```
 
