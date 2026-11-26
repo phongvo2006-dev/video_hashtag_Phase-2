@@ -1,25 +1,5 @@
 -- Phase 2 — analytical views. SQL does every join/aggregation; Power BI only visualizes
 -- the already-computed rows below. Run with: psql -d video_hashtag_phase2 -f sql/03_views.sql
---
--- Views are dropped first (not just CREATE OR REPLACE) because PostgreSQL refuses to
--- change a view's output column types in place, and this file is meant to be safely
--- re-run from a clean state on any machine.
---
--- Revision note: this file was redesigned from 6 views down to 5, ordered as a
--- progressive SQL-complexity ladder (Beginner -> Advanced) instead of a flat list:
---   1. vw_video_topic_tags          -- NEW: plain joins, no aggregation
---   2. vw_category_overview         -- GROUP BY + a scalar-subquery context column
---   3. vw_high_tag_density_categories -- GROUP BY ... HAVING + a scalar subquery
---   4. vw_confidence_by_category    -- GROUP BY, ranked via ORDER BY / LIMIT
---   5. vw_category_review_priority  -- 5 CTEs + window functions (AVG() OVER(), RANK() OVER())
--- vw_top_tags_by_category was retired in favour of vw_video_topic_tags (video-level
--- drill-in rather than a category-level ranked list). vw_topic_coverage_gap was retired
--- as a standalone view: its per-(video, hashtag) coverage logic is now computed inline,
--- via EXISTS, inside vw_category_review_priority's CTEs, and its category-level output
--- (coverage_recall) is exposed as a column of that view instead of a separate one.
--- Drop order matters: vw_category_review_priority has no view dependencies any more
--- (it is built directly from base tables via CTEs), so order is no longer load-bearing,
--- but it is still dropped first on general principle.
 
 DROP VIEW IF EXISTS vw_category_review_priority;
 DROP VIEW IF EXISTS vw_confidence_by_category;
@@ -30,7 +10,7 @@ DROP VIEW IF EXISTS vw_top_tags_by_category;
 DROP VIEW IF EXISTS vw_topic_coverage_gap;
 
 -- ============================================================
--- 1. BEGINNER — plain joins, no aggregation
+-- 1. plain joins, no aggregation
 -- ============================================================
 
 -- BUSINESS QUESTION:
@@ -42,7 +22,7 @@ DROP VIEW IF EXISTS vw_topic_coverage_gap;
 -- creator-support agent pull up one video's substantive tags without
 -- wading through the category-name tag that every video in a category
 -- shares trivially. Foundation for every "which topics" question that
--- follows. See sql/business_questions.md, question 1.
+-- follows. 
 CREATE OR REPLACE VIEW vw_video_topic_tags AS
 SELECT v.video_id, c.category_name, h.hashtag_text
 FROM fact_gold_label g
@@ -52,7 +32,7 @@ INNER JOIN dim_hashtag h ON g.hashtag_id = h.hashtag_id
 WHERE h.is_category_tag = FALSE;
 
 -- ============================================================
--- 2. BEGINNER / INTERMEDIATE — GROUP BY + a scalar-subquery context column
+-- 2. GROUP BY + a scalar-subquery context column
 -- ============================================================
 
 -- BUSINESS QUESTION:
@@ -64,8 +44,7 @@ WHERE h.is_category_tag = FALSE;
 -- Help the Content Operations team size review/QA effort per category,
 -- with the dataset-wide benchmark attached to every row so a viewer never
 -- has to cross-reference a second number to tell "high" from "low".
--- Technique: a non-correlated scalar subquery in the SELECT list, evaluated
--- once and repeated on every group. See sql/business_questions.md, question 2.
+
 CREATE OR REPLACE VIEW vw_category_overview AS
 SELECT
     c.category_name,
@@ -80,7 +59,7 @@ INNER JOIN fact_gold_label g ON v.video_id = g.video_id
 GROUP BY c.category_id, c.category_name;
 
 -- ============================================================
--- 3. INTERMEDIATE — GROUP BY ... HAVING + a scalar subquery
+-- 3. GROUP BY ... HAVING + a scalar subquery
 -- ============================================================
 
 -- BUSINESS QUESTION:
@@ -91,9 +70,7 @@ GROUP BY c.category_id, c.category_name;
 -- Give Content Operations a short, SQL-filtered outlier list (not the full
 -- 20-row table) of categories where tagging effort per video already runs
 -- high, to prioritise lightweight sampling review instead of full review.
--- Technique: GROUP BY ... HAVING against a non-correlated scalar subquery,
--- so the "above average" cutoff is computed by SQL, not eyeballed in BI.
--- See sql/business_questions.md, question 3.
+
 CREATE OR REPLACE VIEW vw_high_tag_density_categories AS
 SELECT c.category_name,
        COUNT(DISTINCT v.video_id)                                          AS video_count,
@@ -107,7 +84,7 @@ HAVING COUNT(g.hashtag_id)::numeric / COUNT(DISTINCT v.video_id) >
 ORDER BY avg_tags_per_video DESC;
 
 -- ============================================================
--- 4. INTERMEDIATE — GROUP BY, ranked via ORDER BY / LIMIT
+-- 4. GROUP BY, ranked via ORDER BY / LIMIT
 -- ============================================================
 
 -- BUSINESS QUESTION:
@@ -131,7 +108,7 @@ JOIN dim_category c ON c.category_id = v.category_id
 GROUP BY c.category_name;
 
 -- ============================================================
--- 5. ADVANCED — 5 CTEs + window functions (AVG() OVER(), RANK() OVER())
+-- 5. CTEs + window functions (AVG() OVER(), RANK() OVER())
 -- ============================================================
 
 -- BUSINESS QUESTION:
