@@ -1,25 +1,33 @@
 # Business Questions & SQL Analysis
 
-This document connects each of the five analytical SQL views in
-[`03_views.sql`](03_views.sql) to a concrete business scenario, the
-question it answers, the actual query result from this dataset, and the
-insight/recommendation that follows from it.
+This document explains the five analytical views defined in
+[`03_views.sql`](03_views.sql). Each section connects a business scenario
+to the question, SQL technique, and intended interpretation.
 
-> **Revision note:** this file moved from `docs/business_questions.md` into
-> `sql/`, next to the views it documents, and was redesigned from 6
-> questions down to **5**, ordered as a progressive **SQL-complexity
-> ladder** (Beginner → Advanced) rather than a flat list. `vw_top_tags_by_category`
-> was retired in favour of a new Beginner-level view, `vw_video_topic_tags`
-> (a video-level drill-in rather than a category-level ranked list).
-> `vw_topic_coverage_gap` was retired as a standalone view: its per-hashtag
-> coverage logic now lives inline, as a CTE using `EXISTS`, inside the
-> rewritten `vw_category_review_priority` (question 5), which also switched
-> from two CTEs + scalar subqueries to 5 CTEs + window functions
-> (`AVG() OVER ()`, `RANK() OVER (...)`). The `docs/` folder was removed;
-> dashboard-level analysis for Power BI now lives in the README's Power BI
-> section instead.
+> **Data validation note:** The SQL definitions have been revised for
+> consistent populations and metric definitions. The result tables and
+> category rankings from earlier drafts should not be reused as verified
+> outputs. Re-run the queries against the current `video_hashtag_phase2`
+> database and refresh any reported numbers before publishing them.
 
-------------------------------------------------------------------------
+## Shared metric definitions
+
+- **Gold labels / tag density:** Questions 2 and 3 count all gold labels,
+  including the category-name label. This keeps the category and
+  dataset-wide averages on the same definition.
+- **Topic hashtags / topic coverage:** Questions 1 and 5 exclude
+  category-name labels (`is_category_tag = FALSE`).
+- **Evaluation predictions:** Questions 4 and 5 use predictions attached
+  only to captions where `is_eval_caption = TRUE`.
+- **Low-confidence threshold:** A prediction is low-confidence when
+  `confidence < 0.50`.
+- **Percentage scale:** `pct_low_confidence_predictions` is returned on a
+  0–100 scale. For example, `20.90` means 20.90%.
+- **Dataset benchmarks in question 5:** Confidence and coverage benchmarks
+  are weighted across all prediction rows and all gold topic pairs,
+  respectively. They are not unweighted averages of category averages.
+
+---
 
 ## 1. `vw_video_topic_tags` — Video-Level Topic Lookup
 
@@ -27,12 +35,12 @@ insight/recommendation that follows from it.
 
 | | |
 |---|---|
-| **Business Scenario** | A content reviewer or creator-support agent has one video in front of them and needs to know what it's actually about, not just which category it was filed under. |
-| **Business Objective** | Surface a video's specific topic hashtags, excluding the category's own name tag (every video in `ads` already carries the tag `ads` — that's not information). |
-| **Business Question** | For a given video, what specific topic hashtags were assigned to it? |
-| **SQL Technique** | Three plain `INNER JOIN`s and a `WHERE h.is_category_tag = FALSE` filter. No `GROUP BY`, no subquery — the foundation the other four questions build on. |
+| **Business Scenario** | A content reviewer or creator-support agent has a video and needs to identify its specific subject matter, beyond its broad category. |
+| **Business Objective** | Show the topic hashtags assigned to an individual video while excluding the category-name tag, which adds little video-specific information. |
+| **Business Question** | For a given video, which topic hashtags were assigned by the gold labels? |
+| **SQL Technique** | `INNER JOIN` across the gold-label fact table and the video, category, and hashtag dimensions; filtered with `WHERE`. |
 
-**SQL Query**
+**Example query**
 
 ```sql
 SELECT video_id, category_name, hashtag_text
@@ -42,289 +50,240 @@ ORDER BY video_id, hashtag_text
 LIMIT 10;
 ```
 
-**Query Result**
+**How to interpret the result**
 
-| video_id | category_name | hashtag_text |
-|---|---|---|
-| video1167 | ads | beach |
-| video1167 | ads | crowd |
-| video1167 | ads | horse |
-| video1167 | ads | riding |
-| video1167 | ads | speech |
-| video1282 | ads | robot |
-| video1282 | ads | serving |
-| video1286 | ads | drawing |
-| video1286 | ads | paper |
-| video1286 | ads | school |
+Each row represents one video–topic-hashtag assignment. A video can therefore
+appear on multiple rows. The view is suitable for a video-level detail table
+or drill-through page in Power BI.
 
-The full view holds **30,561 topic-tag assignments across 9,496 distinct
-videos** (of 10,000 total — the remaining 504 videos have only their
-category-name tag as a gold label, no additional topic tags).
+**Business use**
 
-**Business Insight**
+When a reviewer selects a video, this view provides its topic-level gold
+labels without repeating the category tag as if it were a specific topic.
 
-The category tag alone tells a reviewer almost nothing about a specific
-video's content. `video1167` is filed under `ads`, but its actual subject
-matter — a horse-riding scene with a crowd and a speech — only shows up
-once the category-name tag is filtered out.
-
-**Recommendation**
-
-Use this view as the row-level detail behind any dashboard drill-through:
-a reviewer clicking into a flagged video (from question 5's priority list,
-for example) should land on this query, filtered to that `video_id`, rather
-than being shown the category tag again.
-
-------------------------------------------------------------------------
+---
 
 ## 2. `vw_category_overview` — Content Catalogue Sizing
 
-**Complexity: Beginner / Intermediate** — `GROUP BY` plus a scalar-subquery
-context column.
+**Complexity: Beginner / Intermediate** — `GROUP BY` plus a scalar subquery.
 
 | | |
 |---|---|
-| **Business Scenario** | The Content Operations team is planning headcount and tooling budget for content moderation and tagging quality control across the catalogue. |
-| **Business Objective** | Understand how large each content category is and how hashtag-dense it is, with the dataset-wide benchmark attached to every row so no one has to look it up separately. |
-| **Business Question** | How many videos and distinct hashtags does each category have, how many tags per video on average, and how does that compare to the dataset-wide average? |
-| **SQL Technique** | A **non-correlated scalar subquery** in the `SELECT` list (`(SELECT ... FROM fact_gold_label)`), evaluated once and repeated on every group — the step between a plain `GROUP BY` and `HAVING` with a subquery (question 3). |
+| **Business Scenario** | The Content Operations team is planning review capacity and QA effort across content categories. |
+| **Business Objective** | Compare category size and gold-label density using a common dataset-wide benchmark. |
+| **Business Question** | How many videos and distinct hashtags does each category have, how many gold labels per video does it have on average, and how does that compare with the dataset-wide average? |
+| **SQL Technique** | `GROUP BY`, aggregate functions, `LEFT JOIN`, and a non-correlated scalar subquery in the `SELECT` list. |
 
-**SQL Query**
+**Example query**
 
 ```sql
-SELECT category_name, video_count, distinct_hashtag_count,
-       avg_tags_per_video, dataset_avg_tags_per_video
+SELECT
+    category_name,
+    video_count,
+    distinct_hashtag_count,
+    avg_tags_per_video,
+    dataset_avg_tags_per_video
 FROM vw_category_overview
-ORDER BY video_count DESC
-LIMIT 5;
+ORDER BY video_count DESC;
 ```
 
-**Query Result**
+**How to interpret the result**
 
-| category_name | video_count | distinct_hashtag_count | avg_tags_per_video | dataset_avg_tags_per_video |
-|---|---:|---:|---:|---:|
-| sports | 1,108 | 228 | 4.93 | 4.06 |
-| movies | 1,019 | 261 | 3.42 | 4.06 |
-| autos | 815 | 187 | 4.36 | 4.06 |
-| music | 733 | 217 | 4.68 | 4.06 |
-| food | 643 | 174 | 5.15 | 4.06 |
+- `video_count` counts videos assigned to the category, including videos
+  with no gold-label rows.
+- `distinct_hashtag_count` counts distinct gold-label hashtags observed
+  in that category.
+- `avg_tags_per_video` counts all gold labels per video, including the
+  category-name label.
+- `dataset_avg_tags_per_video` uses the same per-video definition across
+  the complete video catalogue.
 
-Across the full catalogue (all 20 categories): 10,000 videos, 367 distinct
-hashtags, and a dataset-wide average of **4.06** tags per video.
+The `LEFT JOIN` structure ensures that categories and videos are not
+silently dropped just because they have no gold-label rows.
 
-**Business Insight**
+**Business use**
 
-`sports` is both the single largest category (11.1% of all videos) and
-one of the highest-tagged, so it concentrates the most tagging volume.
-`movies` is larger still in distinct-hashtag richness (261 hashtags) but
-sits *below* the 4.06 dataset average at 3.42 tags/video — size and tag
-density are independent dimensions, and the `dataset_avg_tags_per_video`
-column makes that comparison immediate on every row instead of requiring
-a second lookup.
+Use video volume to estimate the scale of category-level review work and
+tag density to understand how many gold-label assignments are typically
+associated with each video. Tag density alone should not be interpreted
+as evidence of higher or lower model quality.
 
-**Recommendation**
+---
 
-Prioritise review and QA tooling capacity for `sports` and `movies` first
-because they carry the largest absolute volume of tagging decisions. For
-categories whose `avg_tags_per_video` already clears the attached
-`dataset_avg_tags_per_video` benchmark, consider a lighter-touch, higher-
-frequency sampling review instead of reviewing every video — question 3
-turns this exact comparison into a pre-filtered shortlist.
+## 3. `vw_high_tag_density_categories` — Above-Average Tag Density
 
-------------------------------------------------------------------------
-
-## 3. `vw_high_tag_density_categories` — Tagging-Effort Outliers
-
-**Complexity: Intermediate** — `GROUP BY ... HAVING` against a
-non-correlated scalar subquery.
+**Complexity: Intermediate** — `GROUP BY ... HAVING` with a scalar subquery.
 
 | | |
 |---|---|
-| **Business Scenario** | Content Operations has already seen the full category breakdown (question 2) and now wants a short, pre-filtered list of outliers, not all 20 rows, to decide where lightweight sampling review is enough. |
-| **Business Objective** | Isolate exactly which categories run meaningfully denser tagging than a typical video, using a SQL-computed cutoff rather than an eyeballed one. |
-| **Business Question** | Which categories have an average tags-per-video **above** the dataset-wide average? |
-| **SQL Technique** | `GROUP BY ... HAVING` filtered against a scalar subquery — the same subquery idea as question 2, but used as a *filter* on groups (`HAVING`) instead of an extra *column* (`SELECT`). |
+| **Business Scenario** | After reviewing the full category breakdown, Content Operations wants a filtered list of categories whose gold-label density is above the dataset benchmark. |
+| **Business Objective** | Identify categories with above-average gold-label counts per video using a SQL-computed threshold. |
+| **Business Question** | Which categories have an average number of gold labels per video above the dataset-wide average? |
+| **SQL Technique** | `GROUP BY`, `HAVING`, aggregate functions, `LEFT JOIN`, and a scalar subquery used as a group filter. |
 
-**SQL Query**
+**Example query**
 
 ```sql
-SELECT category_name, video_count, avg_tags_per_video
+SELECT
+    category_name,
+    video_count,
+    avg_tags_per_video
 FROM vw_high_tag_density_categories
 ORDER BY avg_tags_per_video DESC;
 ```
 
-**Query Result** (full result — only 7 of 20 categories clear the bar)
+**How to interpret the result**
 
-| category_name | video_count | avg_tags_per_video |
-|---|---:|---:|
-| food | 643 | 5.15 |
-| sports | 1,108 | 4.93 |
-| animation | 343 | 4.75 |
-| music | 733 | 4.68 |
-| family | 558 | 4.48 |
-| autos | 815 | 4.36 |
-| cooking | 342 | 4.32 |
+Only categories whose unrounded average exceeds the unrounded dataset-wide
+average are returned. The view uses the same population and tag-count
+definition as question 2, so the comparison is consistent.
 
-The cutoff is the dataset-wide average: **4.06** tags/video.
+**Business use**
 
-**Business Insight**
+The result can help Content Operations identify categories with relatively
+dense tagging workloads for further sampling or process review. A high
+number of tags per video does not, by itself, prove that a category requires
+more manual review or that its labels are less accurate.
 
-Only 7 of the 20 categories (35%) are above average, and the gap between
-the top (`food`, 5.15) and the cutoff (4.06) is substantial — roughly 27%
-denser. This is not a close distribution: a small, identifiable subset of
-categories carries disproportionately more tagging signal per video than
-the rest.
+---
 
-**Recommendation**
+## 4. `vw_confidence_by_category` — Prediction Confidence by Category
 
-Treat this 7-category list, not the full 20-category table, as the
-starting point for Content Operations' lightweight/sampling-review policy
-— each video in these categories already carries more tag signal to
-cross-check, so full-manual review here has a lower marginal payoff than
-spending that same reviewer time on the other 13 categories' sparser
-videos.
-
-------------------------------------------------------------------------
-
-## 4. `vw_confidence_by_category` — Prediction Reliability by Category
-
-**Complexity: Intermediate** — `GROUP BY`, ranked on demand via
-`ORDER BY ... LIMIT`.
+**Complexity: Intermediate** — `GROUP BY` and conditional aggregation.
 
 | | |
 |---|---|
-| **Business Scenario** | The Operations/content-moderation team has limited reviewer capacity and must decide which categories' auto-generated hashtags get a human check before publishing. |
-| **Business Objective** | Identify which categories the deployed model (RoBERTa+RL) is least confident in, to prioritise review capacity. |
-| **Business Question** | In which categories does the model predict with low confidence most often? |
-| **SQL Technique** | The view itself is a plain `GROUP BY` with no ranking baked in; `ORDER BY ... LIMIT` is applied on top, on demand, rather than hard-coding "top 5" into the view definition. |
+| **Business Scenario** | The Operations team needs to understand where the deployed RoBERTa+RL model produces predictions with lower confidence. |
+| **Business Objective** | Compare average prediction confidence and the share of predictions below the chosen confidence threshold across categories. |
+| **Business Question** | In which categories are predictions below the 0.50 confidence threshold most frequent? |
+| **SQL Technique** | `LEFT JOIN`, `GROUP BY`, `AVG`, `COUNT`, and aggregate `FILTER` for conditional counting. |
 
-**SQL Query**
+**Example query**
 
 ```sql
-SELECT category_name, avg_confidence, pct_low_confidence_predictions
+SELECT
+    category_name,
+    prediction_count,
+    avg_confidence,
+    pct_low_confidence_predictions
 FROM vw_confidence_by_category
-ORDER BY pct_low_confidence_predictions DESC
+ORDER BY pct_low_confidence_predictions DESC NULLS LAST
 LIMIT 5;
 ```
 
-**Query Result**
+**How to interpret the result**
 
-| category_name | avg_confidence | pct_low_confidence_predictions |
-|---|---:|---:|
-| education | 0.7095 | 20.9% |
-| documentary | 0.7305 | 18.4% |
-| scitech | 0.7118 | 17.8% |
-| ads | 0.7387 | 17.5% |
-| cooking | 0.7069 | 17.0% |
+- `prediction_count` is the number of materialised predictions associated
+  with evaluation captions in the category.
+- `avg_confidence` is the mean confidence across those predictions.
+- `pct_low_confidence_predictions` is the percentage of predictions with
+  confidence below 0.50, expressed on a 0–100 scale.
+- `NULL` confidence metrics indicate that no evaluation predictions were
+  available for that category; they do not mean zero confidence.
 
-Dataset-wide: average confidence **0.7712**, with **13.8%** of all
-materialised predictions below the 0.5 decision threshold.
+Average confidence and low-confidence percentage describe different
+aspects of the prediction distribution. Both should be considered rather
+than treating either metric as a complete measure of model quality.
 
-**Business Insight**
+**Business use**
 
-`education`, `documentary`, and `scitech` are the three categories with
-both the highest share of low-confidence predictions and among the lowest
-average confidence overall — these are the categories where the model is
-most consistently unsure, not just occasionally wrong.
+Use the low-confidence share to identify categories that may warrant closer
+inspection. The 0.50 threshold is an operational threshold for this
+analysis; it should not be presented as a calibrated probability or proof
+that a prediction is incorrect.
 
-**Recommendation**
+---
 
-Route auto-generated hashtags for `education`, `documentary`, and
-`scitech` content through human review by default, while categories with
-high average confidence and a low low-confidence rate (e.g. `autos` at
-0.8455 average, from `sql/results/vw_category_review_priority.csv`) can
-stay on auto-publish with spot-checking only. Question 5 combines this
-signal with topic-coverage recall into a single pre-ranked list.
+## 5. `vw_category_review_priority` — Combined Review Priority
 
-------------------------------------------------------------------------
-
-## 5. `vw_category_review_priority` — Combined, Pre-Ranked Review Priority
-
-**Complexity: Advanced** — 5 CTEs, an `EXISTS` subquery, and two window
-functions (`AVG() OVER ()`, `RANK() OVER (...)`).
+**Complexity: Advanced** — five CTEs, a correlated `EXISTS` subquery, and
+window functions.
 
 | | |
 |---|---|
-| **Business Scenario** | Operations (question 4) has one diagnostic signal, but a reviewer scanning a dashboard still has to bring a second signal — topic-coverage recall — into the picture, and then work out in what order to act. |
-| **Business Objective** | Produce one combined, pre-ranked list that is "High Priority Review" only when a category is weak on **both** signals at once, ordered so the worst cases are already at the top. |
-| **Business Question** | Which categories have both below-average prediction confidence **and** below-average topic-coverage recall at the same time, and in what priority order should a reviewer work through them? |
-| **SQL Technique** | `topic_gold` restricts gold labels to non-category-name hashtags; `topic_coverage` computes, per category, how many of those gold (video, hashtag) pairs the model actually predicted, via an `EXISTS` correlated subquery; `coverage` turns that into a recall ratio; `confidence` aggregates prediction confidence per category; `combined` attaches the dataset-wide average of **each** signal to every row using `AVG(...) OVER ()` — no separate scalar-subquery pass needed, unlike question 3. A final `RANK() OVER (...)` orders every category by priority tier first, then by how weak its signals are. |
+| **Business Scenario** | Operations has separate confidence and topic-coverage diagnostics but needs one consolidated view to decide which categories to investigate first. |
+| **Business Objective** | Flag categories only when both prediction confidence and topic-coverage recall are below their respective dataset-wide benchmarks. |
+| **Business Question** | Which categories are below the dataset-wide benchmark on both average prediction confidence and topic-coverage recall, and in what order should reviewers inspect them? |
+| **SQL Technique** | Five CTEs (`topic_gold`, `topic_coverage`, `confidence`, `combined`, `classified`), a correlated `EXISTS` subquery, weighted window aggregates, and `RANK() OVER (...)`. |
 
-**SQL Query**
+**Example query**
 
 ```sql
-SELECT review_rank, category_name, avg_confidence, coverage_recall, review_priority
+SELECT
+    review_rank,
+    category_name,
+    avg_confidence,
+    coverage_recall,
+    dataset_avg_confidence,
+    dataset_avg_coverage_recall,
+    review_priority
 FROM vw_category_review_priority
 ORDER BY review_rank;
 ```
 
-**Query Result** (full 20-category ranking; **6 of 20** flagged `High Priority Review`)
+**Metric definitions**
 
-| review_rank | category_name | avg_confidence | coverage_recall | review_priority |
-|---:|---|---:|---:|---|
-| 1 | education | 0.7095 | 0.1227 | High Priority Review |
-| 2 | scitech | 0.7118 | 0.1339 | High Priority Review |
-| 3 | ads | 0.7387 | 0.1327 | High Priority Review |
-| 4 | news | 0.7391 | 0.0925 | High Priority Review |
-| 5 | tvshow | 0.7433 | 0.1121 | High Priority Review |
-| 6 | travel | 0.7441 | 0.1452 | High Priority Review |
-| 7 | cooking | 0.7069 | 0.2264 | Normal |
-| 8 | food | 0.7169 | 0.1823 | Normal |
-| 9 | documentary | 0.7305 | 0.1619 | Normal |
-| 10 | movies | 0.7659 | 0.1137 | Normal |
-| 11 | people | 0.7674 | 0.1991 | Normal |
-| 12 | family | 0.7740 | 0.1885 | Normal |
-| 13 | howto | 0.7809 | 0.1807 | Normal |
-| 14 | beauty | 0.7814 | 0.1599 | Normal |
-| 15 | animation | 0.7941 | 0.1788 | Normal |
-| 16 | music | 0.7962 | 0.1772 | Normal |
-| 17 | animals | 0.7964 | 0.1432 | Normal |
-| 18 | sports | 0.8116 | 0.2005 | Normal |
-| 19 | gaming | 0.8271 | 0.1698 | Normal |
-| 20 | autos | 0.8455 | 0.1864 | Normal |
+- **Gold topic assignments:** Each non-category gold `(video_id, hashtag_id)`
+  pair is one assignment.
+- **Predicted hit:** A gold topic assignment is counted as covered if the
+  same hashtag appears in at least one prediction attached to an evaluation
+  caption for that same video.
+- **Coverage recall:** `predicted_hit_count / gold_topic_assignments`.
+- **Average confidence:** Mean confidence across predictions attached to
+  evaluation captions in the category.
+- **Dataset confidence benchmark:** Total confidence across all eligible
+  predictions divided by the total number of eligible predictions.
+- **Dataset coverage benchmark:** Total matched gold topic pairs divided
+  by the total gold topic assignments.
 
-Full results: [`sql/results/vw_category_review_priority.csv`](results/vw_category_review_priority.csv).
+The `EXISTS` condition checks the exact video–hashtag pair. It does not
+count a hashtag as covered merely because the model predicted it for a
+different video in the same category.
 
-**Business Insight**
+**Priority rules**
 
-Flagging on either signal alone would give a different, noisier list — e.g.
-`cooking` has the single lowest average confidence of all 20 categories
-(question 4) but ranks 7th here, just below the cutoff, because its
-topic-coverage recall (0.2264) is comfortably above the dataset average;
-its low confidence does not come with a matching coverage problem. The
-`coverage_recall` figures here are computed per (video, hashtag) pair via
-`EXISTS`, which is stricter than aggregating counts at the category+hashtag
-level — it is why every recall value in this view is noticeably lower than
-a category-level approximation would suggest, and why the combined flag
-is a defensible "both signals agree, and agree at the individual-pair
-level" list rather than either diagnostic alone.
+1. `High Priority Review`: both category metrics are below their respective
+   weighted dataset-wide benchmarks.
+2. `Normal`: both metrics are available, but the two-signal condition is
+   not met.
+3. `Insufficient Data`: either confidence or topic coverage is unavailable
+   for that category.
 
-**Recommendation**
+The ranking places `High Priority Review` categories first, then orders
+them by lower confidence and lower coverage. Categories with insufficient
+data are placed last. The category name is included as a final tie-breaker
+for deterministic ordering.
 
-Route the 6 `High Priority Review` categories — `education`, `scitech`,
-`ads`, `news`, `tvshow`, `travel` — to mandatory human review before
-publishing auto-generated hashtags, in the order given by `review_rank`;
-the remaining 14, including `cooking` which is weak on confidence alone,
-can stay on a lighter spot-check policy. This view is meant to sit
-directly on the Power BI risk-map chart as the pre-computed, pre-ranked
-"where to look first" answer, rather than leaving that judgment to
-whoever is reading the chart.
+**Business use**
 
-------------------------------------------------------------------------
+Use this view as a consolidated category-level review queue. It combines
+two distinct warning signals while avoiding the assumption that low
+confidence alone necessarily means poor topic coverage, or vice versa.
 
-## Reading SQL results correctly
+---
 
-Each section above follows the same **Query → Insight → Recommendation**
-chain, and the distinction matters:
+## Re-running and validating the results
 
-- **Query result** is a fact about this dataset — it cannot be wrong if
-  the SQL is correct, but it also does not by itself say what to do.
-- **Business insight** is an interpretation of that fact — it can be
-  debated, and a different analyst might weigh the same numbers
-  differently.
-- **Recommendation** is a proposed action — it carries the most
-  uncertainty, because it assumes the insight is right and that no other
-  constraint (budget, team size, model-retraining cost) overrides it.
+The SQL views contain the analytical logic; the figures shown in a report
+or dashboard should be generated from the current database, not manually
+copied from an older draft.
 
-Every number in this document was run against the live
-`video_hashtag_phase2` database, not estimated or invented.
+After running `03_views.sql`, inspect each view with:
+
+```sql
+SELECT * FROM vw_video_topic_tags LIMIT 10;
+SELECT * FROM vw_category_overview ORDER BY video_count DESC;
+SELECT * FROM vw_high_tag_density_categories;
+SELECT * FROM vw_confidence_by_category
+ORDER BY pct_low_confidence_predictions DESC NULLS LAST;
+SELECT * FROM vw_category_review_priority ORDER BY review_rank;
+```
+
+For a reproducible GitHub snapshot, export the query results from PostgreSQL
+after validation. Refresh any numeric examples in the README and this
+document from those current outputs.
+
+**Scope note:** These views describe gold-label volume, prediction
+confidence, and exact topic-tag coverage. They do not measure engagement,
+reach, click-through rate, or recommendation impact because those outcome
+data are not part of the tables used here.
