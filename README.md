@@ -191,23 +191,32 @@ Five SQL views turn the warehouse into reusable analytical datasets, ordered as 
 
 | # | SQL view | Business question | SQL technique |
 |---:|---|---|---|
-| 1 | `vw_video_topic_tags` | What specific topic hashtags were assigned to a given video? | Plain joins, no aggregation |
+| 1 | `vw_video_topic_tags` | What specific topic hashtags were assigned to a given video? | `INNER JOIN`s and a `WHERE` filter, no aggregation |
 | 2 | `vw_category_overview` | How large is each category, and how does it compare to the dataset-wide average? | `GROUP BY` + a scalar-subquery context column |
 | 3 | `vw_high_tag_density_categories` | Which categories have an average tags-per-video above the dataset-wide average? | `GROUP BY ... HAVING` against a scalar subquery |
-| 4 | `vw_confidence_by_category` | In which categories does the model predict with low confidence most often? | `GROUP BY`, ranked via `ORDER BY ... LIMIT` |
-| 5 | `vw_category_review_priority` | Combining confidence and topic-coverage recall, which categories need priority review, and in what order? | 5 CTEs, an `EXISTS` subquery, and window functions (`AVG() OVER ()`, `RANK() OVER (...)`) |
+| 4 | `vw_confidence_by_category` | In which categories does the model predict with low confidence most often? | `GROUP BY` with conditional aggregation over evaluation captions |
+| 5 | `vw_category_review_priority` | Combining confidence and topic-coverage recall, which categories need priority review, and in what order? | CTEs, a correlated `EXISTS` subquery, and window functions (`AVG() OVER ()`, `RANK() OVER (...)`) |
+
+### Shared metric definitions
+
+- **Tag density (views 2–3):** counts all gold labels per video, including the category-name label, so category and dataset-wide averages use the same definition.
+- **Topic hashtags (views 1 and 5):** exclude category-name labels (`is_category_tag = FALSE`).
+- **Evaluation predictions (view 4):** use only predictions attached to captions where `is_eval_caption = TRUE`.
+- **Low-confidence threshold:** a prediction is low-confidence when `confidence < 0.50`. This is an operational threshold, not a calibrated probability and not proof that a prediction is wrong.
+- **Topic coverage (view 5):** a gold `(video, hashtag)` pair counts as covered only if that same hashtag was predicted for that same video; predicting it for a different video in the category does not count.
+- **Priority rule (view 5):** a category is `High Priority Review` only when its average confidence **and** its coverage recall are both below the dataset-wide benchmark. Those categories are ranked first, then ordered by lower confidence and lower coverage.
 
 ### Business Analysis
 
-This project addresses five business questions through analytical SQL views, each building on a more advanced SQL technique than the last. Each analysis includes:
+Each of the five views is documented in **[Business Questions & SQL Analysis](sql/business_questions.md)** with:
 
 - Business scenario and objective
-- SQL technique and implementation
-- Query results from this dataset (not invented figures)
-- Key business insight
-- Actionable recommendation, with its limitations stated explicitly
+- The business question and the SQL technique used
+- An example query
+- How to interpret the result, including the metric definitions and their limitations
+- Business use
 
-See **[Business Questions & SQL Analysis](sql/business_questions.md)** for the full write-up of all five questions.
+> **Validation note:** the SQL definitions were revised for consistent populations and metric definitions, so the write-up does not quote result tables. Re-run the queries against the current `video_hashtag_phase2` database and refresh any reported numbers before publishing them.
 
 ---
 
